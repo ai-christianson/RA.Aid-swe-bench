@@ -33,27 +33,9 @@ def prepare_base_prompt(task):
     if not SUBMISSION_MODE:
         fail_tests = json.loads(task["FAIL_TO_PASS"])
         pass_tests = json.loads(task["PASS_TO_PASS"])
+        return build_prompt(task["problem_statement"], fail_tests, pass_tests)
     else:
-        fail_tests = None
-        pass_tests = None
-
-    problem_details = build_prompt(task["problem_statement"], fail_tests, pass_tests)
-
-    return f"""
-    Repository: {task["repo"]}
-
-    Base Commit: {task["base_commit"]}
-    Code Changes (Patch):
-    {task["patch"]}
-
-    Test Changes:
-    {task["test_patch"]}
-
-    <Problem Statement>:
-    {problem_details}
-    </Problem Statement>
-
-    """
+        return task["problem_statement"]
 
 
 def prepare_research_prompt(task):
@@ -75,21 +57,7 @@ def prepare_planning_prompt(task):
     return (
         base_prompt
         + """
-
-    You are a world class software engineer.
-
-    Your tasks:
-    1. Research and gather relevant context for the problem statement
-    2. Create a plan to solve the problem statement
-    3. Make code changes to fix the problem
-    4. Execute tests to verify your solution
-    5. Refactor based on test results until all tests pass
-
-    Important notes:
     - DO NOT modify test files
-    - Research agent should find context and determine the test command
-    - Virtual environment is pre-installed with `uv` package manager
-    - Virtual environment is already activated
-    - Do not install additional dependencies unless required by problem statement
+    - Virtual environment is pre-installed and already activated
     """
     )
