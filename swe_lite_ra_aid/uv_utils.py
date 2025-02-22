@@ -9,6 +9,13 @@ from typing import Optional
 from .io_utils import change_directory
 from .logger import logger
 
+# Constant for common package requirement files
+COMMON_REQ_FILES = [
+    "requirements.txt",
+    "requirements-dev.txt",
+    "tests/requirements/py3.txt",
+]
+
 
 def get_python_version(repo: str, instance_version: str) -> Optional[str]:
     """
@@ -63,13 +70,12 @@ def uv_venv(
 
         # Try specified Python version first
         if python_version:
-            # Just pass the version to uv and let it handle finding Python
             cmd.extend(["--python", python_version])
             logging.info(
                 f"Using Python version {python_version} for {repo_name} version {repo_version}"
             )
 
-        cmd.append(str(repo_dir / ".venv"))
+        cmd.append(str(venv_path))
 
         try:
             result = subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -88,8 +94,6 @@ def uv_venv(
             os.environ["VIRTUAL_ENV"] = old_venv
 
 
-# Not working as expected due to:
-# error: No `project` table found in: `.../pyproject.toml`
 def uv_sync(repo_dir: Path, python_path: Path) -> None:
     """Sync dependencies using uv."""
     cmd = [
@@ -108,16 +112,16 @@ def uv_sync(repo_dir: Path, python_path: Path) -> None:
 def setup_uv_venv(
     repo_dir: Path, repo_name: str, repo_version: str, force_venv: bool
 ) -> None:
-    """Setup virtual environment using uv for Python >=3.7"""
+    """Setup virtual environment using uv for Python >=3.7 and install project and dependency files."""
     logger.debug("\nSETUP_UV_VENV:")
     logger.debug(f"repo_dir: {repo_dir}")
     logger.debug(f"repo_name: {repo_name}")
     logger.debug(f"repo_version: {repo_version}")
     logger.debug(f"force_venv: {force_venv}")
-    
+
     venv_path = repo_dir / ".venv"
     logger.debug(f"venv_path: {venv_path}")
-    
+
     if venv_path.exists() and not force_venv:
         logger.info(f"Virtual environment already exists at {venv_path}")
         return
@@ -157,6 +161,25 @@ def setup_uv_venv(
             logger.error(f"\nERROR: {error_msg}")
             raise RuntimeError(error_msg) from e
 
+        # Install the project package in editable mode using uv pip
+        logger.info("Installing project package in editable mode...")
+        subprocess.run(
+            ["uv", "pip", "install", "-e", "."],
+            cwd=str(repo_dir),
+            check=True
+        )
+
+        # Install dependencies from common requirement files if they exist
+        for req_file in COMMON_REQ_FILES:
+            req_path = repo_dir / req_file
+            if req_path.is_file():
+                logger.info(f"Installing dependencies from {req_file}...")
+                subprocess.run(
+                    ["uv", "pip", "install", "-r", str(req_path)],
+                    cwd=str(repo_dir),
+                    check=True
+                )
+
     finally:
         if old_venv:
             logger.debug(f"\nRestoring VIRTUAL_ENV: {old_venv}")
@@ -192,8 +215,7 @@ def setup_legacy_venv(repo_dir: Path, python_version: str) -> None:
             
             "$python_path" -m venv "{venv_path}"
         """
-        
-        # Execute the shell script
+
         subprocess.run(["bash", "-c", shell_script], check=True)
 
         pip_path = venv_path / "bin" / "pip"
@@ -202,21 +224,15 @@ def setup_legacy_venv(repo_dir: Path, python_version: str) -> None:
             check=True,
         )
 
-        # Install dependencies similar to uv logic
-        if (repo_dir / "pyproject.toml").is_file():
-            subprocess.run([str(pip_path), "install", "."], check=True)
+        # Install dependencies from common requirement files if they exist
+        for req_file in COMMON_REQ_FILES:
+            req_path = repo_dir / req_file
+            if req_path.is_file():
+                subprocess.run(
+                    [str(pip_path), "install", "-r", str(req_path)], check=True
+                )
 
-        if (repo_dir / "requirements.txt").is_file():
-            subprocess.run(
-                [str(pip_path), "install", "-r", "requirements.txt"], check=True
-            )
-
-        if (repo_dir / "requirements-dev.txt").is_file():
-            subprocess.run(
-                [str(pip_path), "install", "-r", "requirements-dev.txt"], check=True
-            )
-
-        # Install in editable mode if it's a Python package
+        # Install project package (either via pyproject.toml or setup.py) in editable mode
         if (repo_dir / "setup.py").is_file() or (repo_dir / "pyproject.toml").is_file():
             logging.info("Installing cloned project in editable mode.")
             subprocess.run([str(pip_path), "install", "-e", "."], check=True)
@@ -230,8 +246,6 @@ def setup_legacy_venv(repo_dir: Path, python_version: str) -> None:
         )
         logging.error(error_msg)
         raise RuntimeError(error_msg) from e
-    finally:
-        pass  # No need to reset pyenv shell since we're not using it
 
 
 def setup_venv_and_deps(
@@ -250,11 +264,10 @@ def setup_venv_and_deps(
 
     with change_directory(repo_dir):
         logger.debug(f"\nChanged directory to: {os.getcwd()}")
-        
+
         python_version = get_python_version(repo_name, repo_version)
         logger.info(f"Hardcoded python_version from constants.py: {python_version}")
 
-        # Parse version to compare
         major, minor = map(int, python_version.split(".")[:2])
         logger.debug(f"Parsed version: Python {major}.{minor}")
 
@@ -264,4 +277,3 @@ def setup_venv_and_deps(
         else:
             logger.debug("\nUsing uv venv setup (Python >= 3.7)")
             setup_uv_venv(repo_dir, repo_name, repo_version, force_venv)
-
