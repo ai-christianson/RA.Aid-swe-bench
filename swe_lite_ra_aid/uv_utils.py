@@ -42,12 +42,16 @@ def get_python_version(repo: str, instance_version: str) -> Optional[str]:
 
 def uv_venv(
     repo_dir: Path, repo_name: str, repo_version: str, force_venv: bool = False
-) -> None:
-    """Create a virtual environment using uv."""
+) -> bool:
+    """Create a virtual environment using uv.
+    
+    Returns:
+        bool: True if virtual environment was created successfully, False otherwise
+    """
     venv_path = repo_dir / ".venv"
     if venv_path.exists() and not force_venv:
         logging.info(f"Virtual environment already exists at {venv_path}")
-        return
+        return True
 
     # Temporarily unset VIRTUAL_ENV to avoid interference
     old_venv = os.environ.pop("VIRTUAL_ENV", None)
@@ -80,6 +84,7 @@ def uv_venv(
         try:
             result = subprocess.run(cmd, check=True, capture_output=True, text=True)
             logger.debug(result.stdout)
+            return True
         except subprocess.CalledProcessError as e:
             error_msg = (
                 f"UV venv creation failed with exit code {e.returncode}\n"
@@ -88,14 +93,18 @@ def uv_venv(
                 f"Stderr: {e.stderr}"
             )
             logging.error(error_msg)
-            raise RuntimeError(error_msg) from e
+            return False
     finally:
         if old_venv:
             os.environ["VIRTUAL_ENV"] = old_venv
 
 
-def uv_sync(repo_dir: Path, python_path: Path) -> None:
-    """Sync dependencies using uv."""
+def uv_sync(repo_dir: Path, python_path: Path) -> bool:
+    """Sync dependencies using uv.
+    
+    Returns:
+        bool: True if dependencies were synced successfully, False otherwise
+    """
     cmd = [
         "uv",
         "sync",
@@ -106,13 +115,28 @@ def uv_sync(repo_dir: Path, python_path: Path) -> None:
         "--python",
         str(python_path),
     ]
-    subprocess.run(cmd, cwd=str(repo_dir), check=True)
+    try:
+        subprocess.run(cmd, cwd=str(repo_dir), check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        error_msg = (
+            f"UV sync failed with exit code {e.returncode}\n"
+            f"Command: {' '.join(cmd)}\n"
+            f"Stdout: {e.stdout}\n"
+            f"Stderr: {e.stderr}"
+        )
+        logging.error(error_msg)
+        return False
 
 
 def setup_uv_venv(
     repo_dir: Path, repo_name: str, repo_version: str, force_venv: bool
-) -> None:
-    """Setup virtual environment using uv for Python >=3.7 and install project and dependency files."""
+) -> bool:
+    """Setup virtual environment using uv for Python >=3.7 and install project and dependency files.
+    
+    Returns:
+        bool: True if setup completed successfully, False otherwise
+    """
     logger.debug("\nSETUP_UV_VENV:")
     logger.debug(f"repo_dir: {repo_dir}")
     logger.debug(f"repo_name: {repo_name}")
@@ -124,7 +148,7 @@ def setup_uv_venv(
 
     if venv_path.exists() and not force_venv:
         logger.info(f"Virtual environment already exists at {venv_path}")
-        return
+        return True
 
     logger.debug("\nRemoving VIRTUAL_ENV from environment")
     old_venv = os.environ.pop("VIRTUAL_ENV", None)
@@ -149,7 +173,6 @@ def setup_uv_venv(
             result = subprocess.run(
                 cmd + [str(venv_path)], check=True, capture_output=True, text=True
             )
-            logger.debug("\nUV command output:")
             logger.debug(result.stdout)
         except subprocess.CalledProcessError as e:
             error_msg = (
@@ -158,36 +181,69 @@ def setup_uv_venv(
                 f"Stdout: {e.stdout}\n"
                 f"Stderr: {e.stderr}"
             )
-            logger.error(f"\nERROR: {error_msg}")
-            raise RuntimeError(error_msg) from e
+            logging.error(error_msg)
+            return False
+
+        # Get Python path from venv
+        python_path = venv_path / "bin" / "python"
+        logger.debug(f"python_path: {python_path}")
 
         # Install the project package in editable mode using uv pip
         logger.info("Installing project package in editable mode...")
-        subprocess.run(
-            ["uv", "pip", "install", "-e", "."],
-            cwd=str(repo_dir),
-            check=True
-        )
+        try:
+            subprocess.run(
+                ["uv", "pip", "install", "-e", "."],
+                cwd=str(repo_dir),
+                check=True
+            )
+        except subprocess.CalledProcessError as e:
+            error_msg = (
+                f"UV pip install failed with exit code {e.returncode}\n"
+                f"Command: {' '.join(['uv', 'pip', 'install', '-e', '.'])}\n"
+                f"Stdout: {e.stdout}\n"
+                f"Stderr: {e.stderr}"
+            )
+            logging.error(error_msg)
+            return False
 
         # Install dependencies from common requirement files if they exist
         for req_file in COMMON_REQ_FILES:
             req_path = repo_dir / req_file
             if req_path.is_file():
                 logger.info(f"Installing dependencies from {req_file}...")
-                subprocess.run(
-                    ["uv", "pip", "install", "-r", str(req_path)],
-                    cwd=str(repo_dir),
-                    check=True
-                )
+                try:
+                    subprocess.run(
+                        ["uv", "pip", "install", "-r", str(req_path)],
+                        cwd=str(repo_dir),
+                        check=True
+                    )
+                except subprocess.CalledProcessError as e:
+                    error_msg = (
+                        f"UV pip install failed with exit code {e.returncode}\n"
+                        f"Command: {' '.join(['uv', 'pip', 'install', '-r', str(req_path)])}\n"
+                        f"Stdout: {e.stdout}\n"
+                        f"Stderr: {e.stderr}"
+                    )
+                    logging.error(error_msg)
+                    return False
 
+        # Install dependencies
+        logger.debug("\nInstalling dependencies...")
+        if not uv_sync(repo_dir, python_path):
+            return False
+
+        return True
     finally:
         if old_venv:
-            logger.debug(f"\nRestoring VIRTUAL_ENV: {old_venv}")
             os.environ["VIRTUAL_ENV"] = old_venv
 
 
-def setup_legacy_venv(repo_dir: Path, python_version: str) -> None:
-    """Setup virtual environment using venv + pip for Python <3.7"""
+def setup_legacy_venv(repo_dir: Path, python_version: str) -> bool:
+    """Setup virtual environment using venv + pip for Python <3.7
+    
+    Returns:
+        bool: True if setup completed successfully, False otherwise
+    """
     venv_path = repo_dir / ".venv"
 
     try:
@@ -219,24 +275,54 @@ def setup_legacy_venv(repo_dir: Path, python_version: str) -> None:
         subprocess.run(["bash", "-c", shell_script], check=True)
 
         pip_path = venv_path / "bin" / "pip"
-        subprocess.run(
-            [str(pip_path), "install", "--upgrade", "pip", "setuptools", "wheel"],
-            check=True,
-        )
+        try:
+            subprocess.run(
+                [str(pip_path), "install", "--upgrade", "pip", "setuptools", "wheel"],
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            error_msg = (
+                f"pip install failed with exit code {e.returncode}\n"
+                f"Command: {' '.join([str(pip_path), 'install', '--upgrade', 'pip', 'setuptools', 'wheel'])}\n"
+                f"Stdout: {e.stdout}\n"
+                f"Stderr: {e.stderr}"
+            )
+            logging.error(error_msg)
+            return False
 
         # Install dependencies from common requirement files if they exist
         for req_file in COMMON_REQ_FILES:
             req_path = repo_dir / req_file
             if req_path.is_file():
-                subprocess.run(
-                    [str(pip_path), "install", "-r", str(req_path)], check=True
-                )
+                try:
+                    subprocess.run(
+                        [str(pip_path), "install", "-r", str(req_path)], check=True
+                    )
+                except subprocess.CalledProcessError as e:
+                    error_msg = (
+                        f"pip install failed with exit code {e.returncode}\n"
+                        f"Command: {' '.join([str(pip_path), 'install', '-r', str(req_path)])}\n"
+                        f"Stdout: {e.stdout}\n"
+                        f"Stderr: {e.stderr}"
+                    )
+                    logging.error(error_msg)
+                    return False
 
         # Install project package (either via pyproject.toml or setup.py) in editable mode
         if (repo_dir / "setup.py").is_file() or (repo_dir / "pyproject.toml").is_file():
-            logging.info("Installing cloned project in editable mode.")
-            subprocess.run([str(pip_path), "install", "-e", "."], check=True)
+            try:
+                subprocess.run([str(pip_path), "install", "-e", "."], check=True)
+            except subprocess.CalledProcessError as e:
+                error_msg = (
+                    f"pip install failed with exit code {e.returncode}\n"
+                    f"Command: {' '.join([str(pip_path), 'install', '-e', '.'])}\n"
+                    f"Stdout: {e.stdout}\n"
+                    f"Stderr: {e.stderr}"
+                )
+                logging.error(error_msg)
+                return False
 
+        return True
     except subprocess.CalledProcessError as e:
         error_msg = (
             f"Legacy venv setup failed with exit code {e.returncode}\n"
@@ -245,16 +331,19 @@ def setup_legacy_venv(repo_dir: Path, python_version: str) -> None:
             f"Stderr: {e.stderr if hasattr(e, 'stderr') else ''}"
         )
         logging.error(error_msg)
-        raise RuntimeError(error_msg) from e
+        return False
 
 
 def setup_venv_and_deps(
     repo_dir: Path, repo_name: str, repo_version: str, force_venv: bool
-) -> None:
+) -> bool:
     """
     Setup virtual environment and install dependencies using either:
     - uv for Python >=3.7
     - venv + pip for Python <3.7
+    
+    Returns:
+        bool: True if setup completed successfully, False otherwise
     """
     logger.debug("\nSETUP_VENV_AND_DEPS:")
     logger.debug(f"repo_dir: {repo_dir}")
@@ -273,7 +362,7 @@ def setup_venv_and_deps(
 
         if major == 3 and minor < 7:
             logger.debug("\nUsing legacy venv setup (Python < 3.7)")
-            setup_legacy_venv(repo_dir, python_version)
+            return setup_legacy_venv(repo_dir, python_version)
         else:
             logger.debug("\nUsing uv venv setup (Python >= 3.7)")
-            setup_uv_venv(repo_dir, repo_name, repo_version, force_venv)
+            return setup_uv_venv(repo_dir, repo_name, repo_version, force_venv)
